@@ -20,116 +20,147 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 -- SOFTWARE.
 
-shell = {}
-shell.running = false
-
-shell.ui = {}
-
-shell.ui.prompt  = "In [%i]: "
-shell.ui.prompt2 = function() return shell.util.str_rpad("...: ", #shell.util.process_format(shell.ui.prompt), " ") end
-shell.ui.input   = shell.ui.prompt .. "%input\n" -- Usually unused
-shell.ui.output  = "Out[%i]: %result\n"
-shell.ui.error   = "Err[%i]: %result\n"
-shell.ui.footer  = "\n"
-
-shell.last_input = ""
-shell.last_output = ""
-shell.last_error = ""
-shell.last_result = ""
-
-shell.i = 1
-
-shell.replacements = {
-    ["%output"] = function() return shell.last_output end,
-    ["%input"] = function() return shell.last_input end,
-    ["%error"] = function() return shell.last_error end,
-    ["%result"] = function() return shell.last_result end,
-    ["%i"] = function() return shell.i end,
+local shell_template_data = {
+    ui = {
+        prompt  = "In [%i]: ",
+        prompt2 = function(self) return self:str_rpad("...: ", #self:process_format(self.ui.prompt), " ") end,
+        input   = function(self) return self.ui.prompt .. "%input\n" end, -- Usually unused
+        output  = "Out[%i]: %result\n",
+        error   = "Err[%i]: %result\n",
+        footer  = "\n"
+    },
+    config = {
+        replacements = {
+            ["%output"] = function(self) return self.state.history.last_output end,
+            ["%input"] = function(self) return self.state.history.last_input end,
+            ["%error"] = function(self) return self.state.history.last_error end,
+            ["%result"] = function(self) return self.state.history.last_result end,
+            ["%i"] = function(self) return self.state.history.i end,
+        },
+        pairs = {
+            -- ' and " are single-line only
+            ["[["] = "]]",
+            ["("] = ")",
+            ["["] = "]",
+            ["{"] = "}",
+        },
+        commands = {
+            ["quit"] = function(self) self.state.running = false end
+        }
+    },
+    state = {
+        running = false,
+        history = {
+            last_input = "",
+            last_output = "",
+            last_error = "",
+            last_result = "",
+            i = 1
+        },
+        io = {
+            input = "",
+            output = ""
+        }
+    }
 }
 
-shell.pairs = {
-    ['"'] = '"',
-    ["'"] = "'",
-    ["[["] = "]]",
-    ["("] = ")",
-    ["["] = "]",
-    ["{"] = "}",
-}
+local shell_methods = {}
 
-shell.util = {}
-
-function shell.util.escape(text)
+-- Shell utility methods
+function shell_methods.escape(self, text)
     local src = string.gsub("^$()%.[]*+-?)", ".", "%%%1")
     return text:gsub("["..src.."]","%%%1")
 end
 
-function shell.util.process_format(template)
+function shell_methods.process_format(self, template)
     if type(template) == "function" then
-        template = template()
+        template = template(self)
     end
 
     local result = template
-    for a, b in pairs(shell.replacements) do
-        b = str(b())
-        a, b = shell.util.escape(a), b-- shell.util.escape(b)
-        --print("THINGS:", a, b)
+    for a, b in pairs(self.config.replacements) do
+        b = str(b(self))
+        a, b = self:escape(a), b
         result = result:gsub(a, b)
     end
     return result
 end
 
-function shell.util.check_pairs(text)
+function shell_methods.check_pairs(self, text)
     local text = string.gsub(text, [['([^']*)']], "") -- Get rid of strings in '' quotes
     local text = string.gsub(text, [["([^"]*)"]], "") -- Get rid of strings in "" quotes
     local text = string.gsub(text, "%[%[.-%]%]", "") -- Get rid of strings in [[ ]] quotes
 
-    for a, b in pairs(shell.pairs) do
-        a, b = shell.util.escape(a), shell.util.escape(b)
-        local _, count1 = string.gsub(text, a, "")
-        local _, count2 = string.gsub(text, b, "")
-        if count1 ~= count2 then return false end
+    for a, b in pairs(self.config.pairs) do
+        a, b = self:escape(a), self:escape(b)
+        if (a == b) then
+            local _, count = string.gsub(text, a, "")
+            return (count %2) == 0
+        else
+            local _, count1 = string.gsub(text, a, "")
+            local _, count2 = string.gsub(text, b, "")
+            if count1 > count2 then return false end
+        end
     end
 
     return true
 end
 
-function shell.util.str_rpad(str, len, char)
+function shell_methods.str_rpad(self, str, len, char)
     char = char or ' '
     return string.rep(char, len - #str) .. str
 end
 
-function shell.print(...)
+-- Shell's interface methods, for sending and receiving data to/from it
+function shell_methods:send(text)
+    self.state.io.input = self.state.io.input .. text
+    if self:check_pairs(self.state.io.input) then
+        self:execute(self.state.io.input)
+        self.state.history.last_input = self.state.io.input
+        self.state.io.input = ""
+        self.state.history.i = self.state.history.i + 1
+        return true
+    else
+        self.state.io.input = self.state.io.input .. "\n"
+        return false
+    end
+end
+
+function shell_methods:receive()
+    local out = self.state.io.output
+    self.state.io.output = ""
+    return out
+end
+
+-- Shell's output methods, for writing output
+function shell_methods:write(...)
+    local args = {...}
+    for _, text in ipairs(args) do
+        self.state.io.output = self.state.io.output .. text
+    end
+end
+
+function shell_methods:print(...)
     local args = {...}
     for i, text in ipairs(args) do
-        shell.write(text)
-        if i ~= #args then shell.write("\t") end
+        self:write(text)
+        if i ~= #args then self:write("\t") end
     end
-    shell.write("\n")
+    self:write("\n")
 end
 
-function shell.write(...)
+function shell_methods:writef(...)
     local args = {...}
     for _, text in ipairs(args) do
-        io.write(text)
+        self:write(self:process_format(text))
     end
 end
 
-function shell.writef(...)
-    local args = {...}
-    for _, text in ipairs(args) do
-        shell.write(shell.util.process_format(text))
-    end
-end
-
-function shell.read(prompt)
-    shell.writef(prompt)
-    return io.read()
-end
-
-function shell.execute(text, print_input)
+-- Shell's most important method, for executing code
+function shell_methods:execute(text, print_input)
     print_input = print_input or false
     if print_input then
-        shell.writef(shell.ui.input)
+        self:writef(self.ui.input)
     end
 
     -- Attempt to load the code as a statement and grab its return value
@@ -142,40 +173,141 @@ function shell.execute(text, print_input)
 
     local success, result = xpcall(code,
         function(error)
-            shell.last_output = ""
-            shell.last_result = error
-            shell.last_error = error
-            shell.writef(shell.ui.error, shell.ui.footer)
+            self.state.history.last_output = ""
+            self.state.history.last_result = error
+            self.state.history.last_error = error
+            self:writef(self.ui.error, self.ui.footer)
         end
     )
 
     if success then
-        shell.last_output = result
-        shell.last_result = result
-        shell.last_error = ""
-        shell.writef(shell.ui.output, shell.ui.footer)
+        self.state.history.last_output = result
+        self.state.history.last_result = result
+        self.state.history.last_error = ""
+        self:writef(self.ui.output, self.ui.footer)
     end
+
+    return result
 end
 
-function shell.run()
-    shell.running = true
-    while shell.running == true do
-        local input = shell.read(shell.ui.prompt)
+-- Template interface, containing default methods for all interfaces
+local template_interface = {
+    init = function(self, shell)
+        self.shell = shell
+    end,
 
-        while not shell.util.check_pairs(input) do
-            local more_input = shell.read(shell.ui.prompt2)
-            input = input .. "\n" .. more_input
+    prompt_quit = function(self)
+        while true do
+            self:write("\n")
+            local input = self:read("Do you really want to quit ([y]/n)? ")
+            if input == "" or input == "y" or input == "yes" then
+                return true
+            elseif input == "n" or input == "no" then
+                return false
+            end
+            -- if input is another string, or nil, continue
         end
+    end,
 
-        if input == "quit" then
-            shell.running = false
+    stop = function(self) end,
+
+    read = function(self, prompt)
+        local status, result = pcall(self._read, self, prompt)
+        if status then
+            return result -- no error, all fine, alles gut
         else
-            shell.execute(input)
+            -- TODO, we need to handle the potential interrupt. This needs a signal handling library.
+            return nil -- return nil instead of crashing
+        end
+    end,
+
+    write = function(self, ...)
+        local args, text = {...}, ""
+        for _, substring in ipairs(args) do
+            text = text .. substring
+        end
+        self.shell.state.io.output = self.shell.state.io.output .. text
+        self:flush()
+    end,
+
+    on_exec = function(self) end,
+
+    run = function(self, shell)
+        self:init(shell)
+
+        self.shell.state.running = true
+        while self.shell.state.running do
+            local input = self:read(self.shell.ui.prompt)
+
+            if input == nil then
+                if self:prompt_quit() then
+                    self.shell.state.running = false
+                end
+            else
+                local cmd = self.shell.config.commands[input]
+                if cmd then
+                    cmd(self.shell)
+                    break
+                end
+
+                while not self.shell:send(input) do
+                    input = self:read(self.shell.ui.prompt2)
+                    --input = input .. "\n" .. more_input
+                end
+                self:on_exec()
+                self:flush()
+            end
         end
 
-        shell.i = shell.i + 1
+        self:stop()
     end
-end
+}
+
+-- CLI interfaces - simple io.read/io.write one, and a more sophisticated readline one
+local cli_interface = {
+    flush = function(self)
+        local out = self.shell:receive()
+        io.write(out)
+    end,
+
+    _read = function(self, prompt)
+        self.shell:writef(prompt)
+        self:write()
+        return io.read()
+    end
+}
+
+local readline_interface = {
+    init = function(self, shell)
+        self.shell = shell
+        self.RL = require "readline"
+        self.RL.set_options{
+            keeplines=1000,
+            histfile='~/.luashell_hist',
+            completion=false,
+            auto_add=false,
+        }
+    end,
+
+    stop = function(self)
+        self.RL.save_history()
+    end,
+
+    on_exec = function(self)
+        print(self.shell.state.history.last_input)
+        self.RL.add_history(self.shell.state.history.last_input)
+    end,
+
+    flush = function(self)
+        local out = self.shell:receive()
+        io.write(out)
+    end,
+
+    _read = function(self, prompt)
+        prompt = self.shell:process_format(prompt)
+        return self.RL.readline(prompt)
+    end
+}
 
 -- Utility functions for pretty printing
 function dir(obj, pretty_mode, expand_tables, _indent_level)
@@ -187,35 +319,22 @@ function dir(obj, pretty_mode, expand_tables, _indent_level)
     local indent = ""
     local prev_indent = ""
 
-    for i=1,indent_level do
-        indent = indent .. "    "
-    end
-
-    for i=1,indent_level-1 do
-        prev_indent = prev_indent .. "    "
-    end
+    for i=1,indent_level do indent = indent .. "    " end
+    for i=1,indent_level-1 do prev_indent = prev_indent .. "    "  end
     --Done
 
     local result = "{"
-
     if pretty_mode then result = result .. "\n"; end
 
-    local number_mode = false
-    local number_mode_key = 1
-
+    local number_mode, number_mode_key = false, 1
     for k, v in pairs(obj) do
         if k == number_mode_key then
-            number_mode = true
-            number_mode_key = number_mode_key + 1
+            number_mode, number_mode_key = true , number_mode_key + 1
         else
-            number_mode = false
-            number_mode_key = nil
+            number_mode, number_mode_key = false, nil
         end
 
-        if pretty_mode then
-            result = result .. indent
-        end
-
+        if pretty_mode then result = result .. indent end
         if not number_mode then
             result = result .. tostring(k) .. " = "
         end
@@ -232,11 +351,8 @@ function dir(obj, pretty_mode, expand_tables, _indent_level)
             result = result .. str(v)
         end
 
-        if pretty_mode then
-            result = result .. ", \n"
-        else
-            result = result .. ", "
-        end
+        result = result .. ", "
+        if pretty_mode then result = result .. "\n" end
     end
     result = result .. prev_indent .. "}"
 
@@ -262,5 +378,65 @@ function str(obj, pretty_mode)
     end
 end
 
-print = shell.print
-shell.run()
+local function deep_copy(t, dest, aType)
+        local t = t or {}
+        local r = dest or {}
+        for k,v in pairs(t) do
+            if aType and type(v)==aType then
+                r[k] = v
+            elseif not aType then
+                if type(v) == 'table' and k ~= "__index" then
+                    r[k] = deep_copy(v)
+                else
+                    r[k] = v
+                end
+            end
+        end
+        return r
+    end
+
+function shell()
+    local s = {}
+    deep_copy(shell_template_data, s)
+    deep_copy(shell_methods, s)
+    setmetatable(s, shell_mt)
+
+    return s
+end
+
+function interface(name_or_table)
+    name_or_table = name_or_table or "best_cli"
+    local chosen_interface
+    if type(name_or_table) == "table" then
+        chosen_interface = name_or_table
+    elseif name_or_table == "best_cli" then
+        local state, result = pcall(require, "readline")
+        if state == true then
+            chosen_interface = readline_interface
+        else
+            print("Module 'readline.lua' not found, defaulting to standard CLI shell")
+            chosen_interface = cli_interface
+        end
+    elseif name_or_table == "cli" then
+        chosen_interface = cli_interface
+    elseif name_or_table == "readline" then
+        chosen_interface = readline_interface
+    end
+
+    local interface = {}
+
+    deep_copy(template_interface, interface)
+    deep_copy(chosen_interface, interface)
+
+    return interface
+end
+
+function run()
+    local s = shell()
+    local i = interface()
+    __interface = i
+    __shell = s
+    i:run(s)
+end
+
+run()
