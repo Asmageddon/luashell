@@ -294,7 +294,6 @@ local readline_interface = {
     end,
 
     on_exec = function(self)
-        print(self.shell.state.history.last_input)
         self.RL.add_history(self.shell.state.history.last_input)
     end,
 
