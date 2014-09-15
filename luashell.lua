@@ -25,17 +25,27 @@ local shell_template_data = {
         prompt  = "In [%i]: ",
         prompt2 = function(self) return self:str_rpad("...: ", #self:process_format(self.ui.prompt), " ") end,
         input   = function(self) return self.ui.prompt .. "%input\n" end, -- Usually unused
-        output  = "Out[%i]: %result\n",
-        error   = "Err[%i]: %result\n",
+        output  = "Out[%i]: %output\n",
+        error   = "Err[%i]: %error\n",
         footer  = "\n"
     },
     config = {
         replacements = {
-            ["%output"] = function(self) return self.state.history.last_output end,
-            ["%input"] = function(self) return self.state.history.last_input end,
-            ["%error"] = function(self) return self.state.history.last_error end,
-            ["%result"] = function(self) return self.state.history.last_result end,
-            ["%i"] = function(self) return self.state.history.i end,
+            ["%output"] = function(self)
+                local r = "";
+                for i, v in ipairs(self.state.history.last_output) do
+                    r = r .. __str(v)
+                    if i < #self.state.history.last_output then
+                        r = r  .. ",\t"
+                    end
+                end
+                return r
+            end,
+            ["%input"] = function(self) return __str(self.state.history.last_input) end,
+            ["%error"] = function(self) return __str(self.state.history.last_error) end,
+            ["%result"] = function(self) return __str(self.state.history.last_result) end,
+
+            ["%i"] = function(self) return __str(self.state.history.i) end,
         },
         pairs = {
             -- ' and " are single-line only
@@ -52,7 +62,7 @@ local shell_template_data = {
         running = false,
         history = {
             last_input = "",
-            last_output = "",
+            last_output = {},
             last_error = "",
             last_result = "",
             i = 1
@@ -79,7 +89,7 @@ function shell_methods.process_format(self, template)
 
     local result = template
     for a, b in pairs(self.config.replacements) do
-        b = str(b(self))
+        b = b(self)
         a, b = self:escape(a), b
         result = result:gsub(a, b)
     end
@@ -106,9 +116,9 @@ function shell_methods.check_pairs(self, text)
     return true
 end
 
-function shell_methods.str_rpad(self, str, len, char)
+function shell_methods.str_rpad(self, __str, len, char)
     char = char or ' '
-    return string.rep(char, len - #str) .. str
+    return string.rep(char, len - #__str) .. __str
 end
 
 -- Shell's interface methods, for sending and receiving data to/from it
@@ -171,20 +181,26 @@ function shell_methods:execute(text, print_input)
         code = loadstring(text)
     end
 
-    local success, result = xpcall(code,
+    local result = {xpcall(code,
         function(error)
-            self.state.history.last_output = ""
+            self.state.history.last_output = {}
             self.state.history.last_result = error
             self.state.history.last_error = error
             self:writef(self.ui.error, self.ui.footer)
         end
-    )
+    )}
+
+    local success = result[1]
+    table.remove(result, 1)
 
     if success then
         self.state.history.last_output = result
         self.state.history.last_result = result
         self.state.history.last_error = ""
-        self:writef(self.ui.output, self.ui.footer)
+        if #result > 0 then
+            self:writef(self.ui.output)
+        end
+        self:writef(self.ui.footer)
     end
 
     return result
@@ -309,7 +325,7 @@ local readline_interface = {
 }
 
 -- Utility functions for pretty printing
-function dir(obj, pretty_mode, expand_tables, _indent_level)
+local function table_to_string(obj, pretty_mode, expand_tables, _indent_level)
     pretty_mode = pretty_mode or false
     expand_tables = expand_tables or false
 
@@ -342,12 +358,12 @@ function dir(obj, pretty_mode, expand_tables, _indent_level)
             if v == obj then
                 result = result .. "self"
             elseif expand_tables then
-                result = result .. dir(v, pretty_mode, expand_tables, indent_level + 1)
+                result = result .. table_to_string(v, pretty_mode, expand_tables, indent_level + 1)
             else
                 result = result .. tostring(v)
             end
         else
-            result = result .. str(v)
+            result = result .. __str(v)
         end
 
         result = result .. ", "
@@ -358,7 +374,8 @@ function dir(obj, pretty_mode, expand_tables, _indent_level)
     return result
 end
 
-function str(obj, pretty_mode)
+function __str(obj, pretty_mode)
+    pretty_mode = pretty_mode or false
     local obj_type = type(obj)
     if obj_type == "number" then
         return tostring(obj)
@@ -367,7 +384,7 @@ function str(obj, pretty_mode)
     elseif obj_type == "function" then
         return tostring(obj)
     elseif obj_type == "table" then
-        return dir(obj, pretty_mode)
+        return table_to_string(obj, pretty_mode)
     elseif obj_type == "nil" then
         return "nil"
     elseif obj_type == "boolean" then
@@ -377,22 +394,25 @@ function str(obj, pretty_mode)
     end
 end
 
+str = __str
+
+
 local function deep_copy(t, dest, aType)
-        local t = t or {}
-        local r = dest or {}
-        for k,v in pairs(t) do
-            if aType and type(v)==aType then
+    local t = t or {}
+    local r = dest or {}
+    for k,v in pairs(t) do
+        if aType and type(v)==aType then
+            r[k] = v
+        elseif not aType then
+            if type(v) == 'table' and k ~= "__index" then
+                r[k] = deep_copy(v)
+            else
                 r[k] = v
-            elseif not aType then
-                if type(v) == 'table' and k ~= "__index" then
-                    r[k] = deep_copy(v)
-                else
-                    r[k] = v
-                end
             end
         end
-        return r
     end
+    return r
+end
 
 function shell()
     local s = {}
