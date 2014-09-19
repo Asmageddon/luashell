@@ -326,9 +326,8 @@ local readline_interface = {
 
 -- Utility function for pretty printing
 function str(obj, pretty_mode, max_depth, _depth, _visited)
-    max_depth = max_depth or 0
+    max_depth = max_depth or -1
     _depth = _depth or 1
-    if _visited and type(obj) == "table" then _visited[obj] = _depth end
     _visited = _visited and setmetatable({}, {__index = _visited}) or {}
     pretty_mode = pretty_mode or false
 
@@ -338,14 +337,14 @@ function str(obj, pretty_mode, max_depth, _depth, _visited)
         return '"' .. obj .. '"'
     elseif obj_type == "table" and _visited[obj] ~= nil and _visited[obj] ~= _depth then
         return "<loop>"
-    elseif obj_type == "table" and (max_depth <= 0 or _depth <= max_depth) then
+    elseif obj_type == "table" and (max_depth < 0 or _depth <= max_depth) then
+        _visited[obj] = true
         local result = "{"
         if pretty_mode then result = result .. "\n"; end
 
-        --Handle indentation levels
         local indent = pretty_mode and string.rep("    ", _depth) or ""
         local prev_indent = pretty_mode and string.rep("    ", _depth-1) or ""
-
+        
         for k, v in ipairs(obj) do
             result = result .. indent .. str(v, pretty_mode, max_depth, _depth + 1, _visited) .. ", "
             if pretty_mode then result = result .. "\n"; end
@@ -359,8 +358,12 @@ function str(obj, pretty_mode, max_depth, _depth, _visited)
         result = result .. prev_indent .. "}"
 
         return result
-    else -- number, function, nil, boolean
-        return tostring(obj) or "userdata/unknown"
+    elseif obj_type == "number" or obj_type == "nil" then
+        return tostring(obj)
+    elseif obj_type == "boolean" then
+        return "[" .. tostring(obj) .. "]"
+    else 
+        return "<" .. (tostring(obj) or "userdata/unknown") .. ">"
     end
 end
 
