@@ -324,77 +324,47 @@ local readline_interface = {
     end
 }
 
--- Utility functions for pretty printing
-local function table_to_string(obj, pretty_mode, expand_tables, _indent_level)
+-- Utility function for pretty printing
+function str(obj, pretty_mode, max_depth, _depth, _visited)
+    max_depth = max_depth or 0
+    _depth = _depth or 1
+    if _visited and type(obj) == "table" then _visited[obj] = _depth end
+    _visited = _visited and setmetatable({}, {__index = _visited}) or {}
     pretty_mode = pretty_mode or false
-    expand_tables = expand_tables or false
 
-    --Handle indentation levels
-    local indent_level = _indent_level or 1
-    local indent = ""
-    local prev_indent = ""
-
-    for i=1,indent_level do indent = indent .. "    " end
-    for i=1,indent_level-1 do prev_indent = prev_indent .. "    "  end
-    --Done
-
-    local result = "{"
-    if pretty_mode then result = result .. "\n"; end
-
-    local number_mode, number_mode_key = false, 1
-    for k, v in pairs(obj) do
-        if k == number_mode_key then
-            number_mode, number_mode_key = true , number_mode_key + 1
-        else
-            number_mode, number_mode_key = false, nil
-        end
-
-        if pretty_mode then result = result .. indent end
-        if not number_mode then
-            result = result .. tostring(k) .. " = "
-        end
-
-        if type(v) == "table" then
-            if v == obj then
-                result = result .. "self"
-            elseif expand_tables then
-                result = result .. table_to_string(v, pretty_mode, expand_tables, indent_level + 1)
-            else
-                result = result .. tostring(v)
-            end
-        else
-            result = result .. __str(v)
-        end
-
-        result = result .. ", "
-        if pretty_mode then result = result .. "\n" end
-    end
-    result = result .. prev_indent .. "}"
-
-    return result
-end
-
-function __str(obj, pretty_mode)
-    pretty_mode = pretty_mode or false
     local obj_type = type(obj)
-    if obj_type == "number" then
-        return tostring(obj)
-    elseif obj_type == "string" then
+
+    if obj_type == "string" then
         return '"' .. obj .. '"'
-    elseif obj_type == "function" then
-        return tostring(obj)
-    elseif obj_type == "table" then
-        return table_to_string(obj, pretty_mode)
-    elseif obj_type == "nil" then
-        return "nil"
-    elseif obj_type == "boolean" then
-        return tostring(obj)
-    else
+    elseif obj_type == "table" and _visited[obj] ~= nil and _visited[obj] ~= _depth then
+        return "<loop>"
+    elseif obj_type == "table" and (max_depth <= 0 or _depth <= max_depth) then
+        local result = "{"
+        if pretty_mode then result = result .. "\n"; end
+
+        --Handle indentation levels
+        local indent = pretty_mode and string.rep("    ", _depth) or ""
+        local prev_indent = pretty_mode and string.rep("    ", _depth-1) or ""
+
+        for k, v in ipairs(obj) do
+            result = result .. indent .. str(v, pretty_mode, max_depth, _depth + 1, _visited) .. ", "
+            if pretty_mode then result = result .. "\n"; end
+        end
+        for k, v in pairs(obj) do
+            if type(k) ~= "number" or not (k >= 1 and k <= #obj) then
+                result = result .. indent .. tostring(k) .. " = " .. str(v, pretty_mode, max_depth, _depth + 1, _visited) .. ", "
+                if pretty_mode then result = result .. "\n"; end
+            end
+        end
+        result = result .. prev_indent .. "}"
+
+        return result
+    else -- number, function, nil, boolean
         return tostring(obj) or "userdata/unknown"
     end
 end
 
-str = __str
+__str = str -- In case user overwrites str. This should be done somehow else >_>
 
 
 local function deep_copy(t, dest, aType)
